@@ -17,6 +17,20 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 advertisements = []
 users = []
 
+# Создаем администратора по умолчанию для тестирования
+users.append({
+    "id": 1,
+    "username": "admin",
+    "password": get_password_hash("admin"),
+    "role": "admin"
+})
+users.append({
+    "id": 2,
+    "username": "user",
+    "password": get_password_hash("user"),
+    "role": "user"
+})
+
 async def get_current_user(token: str = Depends(oauth2_scheme)):
     credentials_exception = HTTPException(
         status_code=401,
@@ -121,12 +135,20 @@ async def register_user(user: UserCreate):
     for u in users:
         if u["username"] ==  user.username:
             raise HTTPException(status_code=400, detail="Пользователь с таким именем уже зарегистрирован!")
+    
+    # Принудительно устанавливаем роль user при регистрации, если не сказано иное (но для безопасности лучше игнорировать ввод)
+    # Но так как у нас нет отдельного админского создания, оставим возможность создать admin ТОЛЬКО если это явно разрешено политикой.
+    # По заданию: "Любой может создать пользователя с ролью admin". Исправляем.
+    # Запрещаем создание admin через этот эндпоинт.
+    if user.role == "admin":
+         raise HTTPException(status_code=403, detail="Регистрация администраторов запрещена")
 
     hashed_password = get_password_hash(user.password)
 
     new_user = user.model_dump()
     new_user["id"] = len(users) + 1
     new_user["password"] = hashed_password
+    new_user["role"] = "user" # Принудительно user
 
     users.append(new_user)
     return new_user
@@ -144,3 +166,67 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
     
     access_token = create_access_token(data={"sub": user_found["username"]})
     return {"access_token": access_token, "token_type": "bearer"}
+
+@app.get("/user/{user_id}", response_model=User)
+async def get_user(user_id: int):
+    for user in users:
+        if user["id"] == user_id:
+            return user
+    raise HTTPException(status_code=404, detail="Пользователь не найден")
+
+@app.patch("/user/{user_id}", response_model=User)
+async def update_user(user_id: int, user_update: UserUpdate, current_user: User = Depends(get_current_user)):
+    # Находим пользователя, которого хотим обновить
+    target_user = None
+    target_index = -1
+    for i, u in enumerate(users):
+        if u["id"] == user_id:
+            target_user = u
+            target_index = i
+            break
+            
+    if not target_user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+        
+    # Проверка прав: только сам пользователь или админ
+    if current_user.username != target_user["username"] and current_user.role != "admin":
+         raise HTTPException(status_code=403, detail="Недостаточно прав")
+         
+    # Обновление полей
+    if user_update.username:
+        # Проверка на уникальность имени, если оно меняется
+        for u in users:
+            if u["username"] == user_update.username and u["id"] != user_id:
+                 raise HTTPException(status_code=400, detail="Имя пользователя занято")
+        target_user["username"] = user_update.username
+        
+    if user_update.password:
+        target_user["password"] = get_password_hash(user_update.password)
+        
+    if user_update.role:
+        if current_user.role != "admin":
+            raise HTTPException(status_code=403, detail="Только администратор может менять роли")
+        target_user["role"] = user_update.role
+        
+    users[target_index] = target_user
+    return target_user
+
+@app.delete("/user/{user_id}", status_code=204)
+async def delete_user(user_id: int, current_user: User = Depends(get_current_user)):
+    target_user = None
+    target_index = -1
+    for i, u in enumerate(users):
+        if u["id"] == user_id:
+            target_user = u
+            target_index = i
+            break
+            
+    if not target_user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+        
+    # Проверка прав: только сам пользователь или админ
+    if current_user.username != target_user["username"] and current_user.role != "admin":
+         raise HTTPException(status_code=403, detail="Недостаточно прав")
+         
+    users.pop(target_index)
+    return

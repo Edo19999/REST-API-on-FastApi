@@ -25,6 +25,11 @@ class UserCreate(BaseModel):
     password: str
     role: Literal["user", "admin"] = "user"
 
+class UserUpdate(BaseModel):
+    username: Optional[str] = None
+    password: Optional[str] = None
+    role: Optional[Literal["user", "admin"]] = None
+
 class User(BaseModel):
     id : int
     username: str
